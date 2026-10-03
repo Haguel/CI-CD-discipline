@@ -1,0 +1,69 @@
+name: Reusable Docker build
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Docker image name (namespace/repository when pushing)
+        required: true
+        type: string
+      tag:
+        description: Docker image tag
+        required: true
+        type: string
+      push:
+        description: Push to Docker Hub; otherwise upload an image archive
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ${{ inputs.image }}
+      IMAGE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate push configuration
+        if: inputs.push
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME" || { echo 'Set DOCKERHUB_USERNAME secret'; exit 1; }
+          test -n "$DOCKERHUB_TOKEN" || { echo 'Set DOCKERHUB_TOKEN secret'; exit 1; }
+          [[ "$IMAGE_NAME" == */* ]] || { echo 'Set DOCKERHUB_IMAGE variable to namespace/repository'; exit 1; }
+      - name: Build and tag image
+        run: docker build --tag "$IMAGE_NAME:$IMAGE_TAG" .
+      - name: Log in to Docker Hub
+        if: inputs.push && github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Push image
+        if: inputs.push && github.ref == 'refs/heads/main'
+        run: docker push "$IMAGE_NAME:$IMAGE_TAG"
+      - name: Save image archive
+        if: ${{ !inputs.push || github.ref != 'refs/heads/main' }}
+        run: docker save --output docker-image.tar "$IMAGE_NAME:$IMAGE_TAG"
+      - name: Upload image archive
+        if: ${{ !inputs.push || github.ref != 'refs/heads/main' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ github.sha }}
+          path: docker-image.tar
+          if-no-files-found: error
+          compression-level: 0
+      - name: Log out of Docker Hub
+        if: always() && inputs.push && github.ref == 'refs/heads/main'
+        run: docker logout
